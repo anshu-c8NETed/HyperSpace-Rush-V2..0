@@ -90,7 +90,7 @@ const CONFIG = {
   tubeRadius:               0.65,
   tubeSegments:             320,
   tubeRadialSegments:       24,
-  playerRadius:             0.06,  // tighter — ship is visible so collision radius is ship-hull sized
+  playerRadius:             0.06,
   maxOffset:                0.42,
   baseSpeed:                2.0,
   baseMoveSpeed:            1.25,
@@ -110,11 +110,10 @@ const CONFIG = {
   boostRechargeRate:        15,
   healthMax:                3,
 
-  // Third-person camera offsets (in ship-local space)
-  camBack:    0.38,   // how far behind ship
-  camUp:      0.12,   // how far above ship
-  camLagPos:  0.08,   // position lerp factor per frame   (lower = more lag)
-  camLagLook: 0.10,   // look-at lerp factor
+  camBack:    0.55,
+  camUp:      0.18,
+  camLagPos:  0.08,
+  camLagLook: 0.10,
 };
 
 const ICE   = 0xc8e8ff;
@@ -122,8 +121,6 @@ const WHITE = 0xffffff;
 const CRIM  = 0xff1a2e;
 
 // ─── Ship builder ─────────────────────────────────────────────────────────
-// Pure geometry — no textures, no PBR noise.
-// Silhouette: needle fuselage + swept delta wings + twin engine pods.
 function buildShip(scene) {
   const ship = new THREE.Group();
 
@@ -148,30 +145,24 @@ function buildShip(scene) {
     roughness: 0.3,
   });
 
-  // ── Fuselage: stretched octahedron ──
-  // Scale a sphere into a needle shape
   const fuseGeo = new THREE.ConeGeometry(0.018, 0.17, 6, 1);
-  fuseGeo.rotateX(-Math.PI / 2);                      // nose points forward (-Z)
+  fuseGeo.rotateX(-Math.PI / 2);
   const fuse = new THREE.Mesh(fuseGeo, MAT_HULL);
   ship.add(fuse);
 
-  // Fuselage rear block
   const rearGeo = new THREE.BoxGeometry(0.028, 0.016, 0.08);
   const rear = new THREE.Mesh(rearGeo, MAT_HULL);
   rear.position.z = 0.06;
   ship.add(rear);
 
-  // ── Wings: flat swept triangles made from custom BufferGeometry ──
-  // Left wing
   const makeWing = (side) => {
     const geo = new THREE.BufferGeometry();
-    const s   = side; // +1 or -1
+    const s   = side;
     const v   = new Float32Array([
-      // root-leading, root-trailing, tip
-       0.0,  0.0,     -0.015,     // root front
-       0.0,  0.0,      0.065,     // root rear
-       s*0.095, -0.006, 0.05,     // tip rear
-       s*0.095, -0.006, 0.005,    // tip front
+       0.0,  0.0,     -0.015,
+       0.0,  0.0,      0.065,
+       s*0.095, -0.006, 0.05,
+       s*0.095, -0.006, 0.005,
     ]);
     const idx = new Uint16Array([0,1,2, 0,2,3]);
     geo.setAttribute('position', new THREE.BufferAttribute(v, 3));
@@ -182,7 +173,6 @@ function buildShip(scene) {
   ship.add(makeWing(1));
   ship.add(makeWing(-1));
 
-  // Wing accent strip (thin bar along leading edge)
   const addAccentBar = (side) => {
     const geo = new THREE.BoxGeometry(0.004, 0.003, 0.07);
     const bar = new THREE.Mesh(geo, MAT_ACCENT);
@@ -192,7 +182,6 @@ function buildShip(scene) {
   };
   addAccentBar(1); addAccentBar(-1);
 
-  // ── Engine pods (twin) ──
   const podGeo = new THREE.CylinderGeometry(0.010, 0.007, 0.065, 8);
   podGeo.rotateX(Math.PI / 2);
 
@@ -201,27 +190,23 @@ function buildShip(scene) {
     pod.position.set(side * 0.038, -0.004, 0.058);
     ship.add(pod);
 
-    // Engine glow disc (bright white circle at exhaust)
     const discGeo = new THREE.CircleGeometry(0.007, 16);
     const disc    = new THREE.Mesh(discGeo, MAT_ENGINE);
     disc.position.set(side * 0.038, -0.004, 0.092);
-    disc.rotation.y = Math.PI;   // face backward
+    disc.rotation.y = Math.PI;
     ship.add(disc);
 
-    // Engine point light
     const lt = new THREE.PointLight(ICE, 0.25, 0.18);
     lt.position.set(side * 0.038, -0.004, 0.095);
     ship.add(lt);
   };
   makePod(1); makePod(-1);
 
-  // ── Cockpit canopy strip ──
   const canopyGeo = new THREE.BoxGeometry(0.014, 0.007, 0.04);
   const canopy    = new THREE.Mesh(canopyGeo, MAT_ACCENT);
   canopy.position.set(0, 0.013, -0.02);
   ship.add(canopy);
 
-  // Wireframe overlay — very dim, hints at panel lines
   const wireGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(0.05, 0.022, 0.175), 15);
   const wire    = new THREE.LineSegments(wireGeo, new THREE.LineBasicMaterial({
     color: ICE, transparent: true, opacity: 0.12,
@@ -260,16 +245,25 @@ export class GameEngine {
       invulnerable: false,
     };
 
-    // Camera & ship state
-    this._shipPos   = new THREE.Vector3();
-    this._shipQuat  = new THREE.Quaternion();
-    this._camPos    = new THREE.Vector3();
-    this._camTarget = new THREE.Vector3();  // smooth look-at target
-    this._shipBankAngle = 0;               // visual roll for banking feel
-    this._fov       = 72;
-    this._shakeMag  = 0;
-    this._damageAmt = 0;
-    this._boostAmt  = 0;
+    this._camPos        = new THREE.Vector3();
+    this._camTarget     = new THREE.Vector3();
+    this._shipBankAngle = 0;
+    this._shakeMag      = 0;
+    this._damageAmt     = 0;
+    this._boostAmt      = 0;
+
+    // ── Pre-allocated temporaries — no heap churn per frame ──
+    this._v0       = new THREE.Vector3();
+    this._v1       = new THREE.Vector3();
+    this._v2       = new THREE.Vector3();
+    this._fwd      = new THREE.Vector3();
+    this._right    = new THREE.Vector3();
+    this._up       = new THREE.Vector3();
+    this._worldUp  = new THREE.Vector3(0, 1, 0);
+    this._bankAxis = new THREE.Vector3(0, 0, 1);
+    this._mat4     = new THREE.Matrix4();
+    this._qBase    = new THREE.Quaternion();
+    this._qBank    = new THREE.Quaternion();
 
     this.keys = {
       w:false, a:false, s:false, d:false,
@@ -281,13 +275,12 @@ export class GameEngine {
     this._setupInput();
   }
 
-  // ── Scene init ────────────────────────────────────────────────────────────
   _init() {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x000000);
-    this.scene.fog = new THREE.FogExp2(0x000000, 0.030);
+    this.scene.fog = new THREE.FogExp2(0x000000, 0.022);
 
-    this.camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.005, 300);
+    this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.005, 300);
 
     this.renderer = new THREE.WebGLRenderer({
       canvas:          this.canvas,
@@ -295,12 +288,11 @@ export class GameEngine {
       powerPreference: 'high-performance',
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.isMobile ? 1.5 : 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.toneMapping         = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled   = false;
 
-    // Post-processing
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
 
@@ -315,14 +307,9 @@ export class GameEngine {
     this.screenPass = new ShaderPass(ScreenPass);
     this.composer.addPass(this.screenPass);
 
-    // Scene lighting
     this.scene.add(new THREE.AmbientLight(0x0c0c18, 2.0));
-
-    // Key light that follows the ship (fills the hull)
     this.shipLight = new THREE.PointLight(0x8899cc, 0.5, 1.2);
     this.scene.add(this.shipLight);
-
-    // Rim light from front-left (gives ship that edge definition)
     this.rimLight = new THREE.PointLight(ICE, 0.3, 1.0);
     this.scene.add(this.rimLight);
 
@@ -330,29 +317,24 @@ export class GameEngine {
     this._buildStarfield();
     this._buildPools();
 
-    // Build the player ship
     this.ship = buildShip(this.scene);
 
-    // Place ship at start so it's visible before game begins
     const startPos = spline.getPointAt(0);
     this.ship.position.copy(startPos);
-    this._camPos.copy(startPos).z += CONFIG.camBack * 2;
+    this._camPos.copy(startPos);
+    this._camPos.z += CONFIG.camBack * 2;
 
     this._onResize = this._handleResize.bind(this);
     window.addEventListener('resize', this._onResize);
 
-    this.clock         = new THREE.Clock();
-    this.lastFrameTime = 0;
-    this.frameTime     = 1000 / 60;
-    this._time         = 0;
+    this.clock = new THREE.Clock();
+    this._time = 0;
   }
 
-  // ── Tunnel ────────────────────────────────────────────────────────────────
   _buildTunnel() {
     const tubeGeo = new THREE.TubeGeometry(
       spline, CONFIG.tubeSegments, CONFIG.tubeRadius, CONFIG.tubeRadialSegments, true,
     );
-
     this._tunnelUniforms = { uTime: { value: 0 }, uSpeed: { value: 0 } };
     this.scene.add(new THREE.Mesh(tubeGeo, new THREE.ShaderMaterial({
       uniforms:       this._tunnelUniforms,
@@ -362,7 +344,6 @@ export class GameEngine {
       transparent:    true,
       depthWrite:     false,
     })));
-
     this.tubeEdge = new THREE.LineSegments(
       new THREE.EdgesGeometry(tubeGeo, 12),
       new THREE.LineBasicMaterial({ color: ICE, transparent: true, opacity: 0.18 }),
@@ -370,13 +351,11 @@ export class GameEngine {
     this.scene.add(this.tubeEdge);
   }
 
-  // ── Starfield ─────────────────────────────────────────────────────────────
   _buildStarfield() {
     const COUNT   = this.isMobile ? 300 : 700;
     const geo     = new THREE.BufferGeometry();
     const pos     = new Float32Array(COUNT * 3);
     this._starVel = new Float32Array(COUNT);
-
     for (let i = 0; i < COUNT; i++) {
       const i3 = i * 3;
       pos[i3]   = (Math.random() - 0.5) * 140;
@@ -386,7 +365,6 @@ export class GameEngine {
     }
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     this._starCount = COUNT;
-
     this.starfield = new THREE.Points(geo, new THREE.PointsMaterial({
       size: this.isMobile ? 0.09 : 0.13,
       color: WHITE, transparent: true, opacity: 0.25, sizeAttenuation: true,
@@ -394,7 +372,6 @@ export class GameEngine {
     this.scene.add(this.starfield);
   }
 
-  // ── Object pools ──────────────────────────────────────────────────────────
   _buildPools() {
     this.obstaclePool       = [];
     this.activeObstacles    = [];
@@ -417,9 +394,7 @@ export class GameEngine {
       group.visible = false;
       this.scene.add(group);
       this.obstaclePool.push({
-        mesh: group,
-        active: false,
-        pathPos: 0,
+        mesh: group, active: false, pathPos: 0,
         rotAxis: new THREE.Vector3(Math.random(), Math.random(), Math.random()).normalize(),
         rotSpeed: (Math.random() - 0.5) * 2.2 + (Math.random() > 0.5 ? 0.8 : -0.8),
       });
@@ -444,7 +419,6 @@ export class GameEngine {
     }
   }
 
-  // ── Spawn ─────────────────────────────────────────────────────────────────
   _spawnObstacles(count) {
     this.activeObstacles.length = 0;
     this.obstaclePool.forEach(o => { o.active = false; o.mesh.visible = false; });
@@ -479,7 +453,6 @@ export class GameEngine {
     }
   }
 
-  // ── Input ─────────────────────────────────────────────────────────────────
   _setupInput() {
     let lastBoost = 0;
     this._onKeyDown = (e) => {
@@ -515,7 +488,7 @@ export class GameEngine {
     this.keys.w = dy < -t; this.keys.s = dy > t;
   }
   clearJoystick() { this.keys.a = this.keys.d = this.keys.w = this.keys.s = false; }
-  setBoost(v) { this.keys.space = v; }
+  setBoost(v)     { this.keys.space = v; }
 
   togglePause() {
     this.isPaused = !this.isPaused;
@@ -523,7 +496,6 @@ export class GameEngine {
     if (!this.isPaused) this.clock.getDelta();
   }
 
-  // ── Game control ──────────────────────────────────────────────────────────
   startGame() {
     const s = this.state;
     Object.assign(s, {
@@ -544,7 +516,7 @@ export class GameEngine {
   }
 
   endGame() {
-    const s    = this.state;
+    const s = this.state;
     s.isPlaying = false;
     const isNew = s.score > s.highScore;
     if (isNew) { s.highScore = s.score; localStorage.setItem('hyperspace_highscore', s.highScore); }
@@ -561,7 +533,6 @@ export class GameEngine {
     this.activeObstacles.length = this.activeCollectibles.length = 0;
   }
 
-  // ── Boost / damage ────────────────────────────────────────────────────────
   _activateBoost() {
     const s = this.state;
     if (s.boostActive || s.boostCooldown || s.boostCharge < 30) return;
@@ -591,24 +562,22 @@ export class GameEngine {
     this.callbacks.onCollect?.(CONFIG.collectibleScoreValue);
   }
 
-  // ── Core: update ship transform + third-person camera ─────────────────────
+  // ── Ship + camera — zero heap allocations per frame ───────────────────────
   _updateShipAndCamera(delta) {
     const s = this.state;
 
-    // ── Spline position ──
     const t = s.elapsedMs * 0.1;
     const p = (t % s.loopTime) / s.loopTime;
 
-    const splinePos  = spline.getPointAt(p);
-    const splineAhead= spline.getPointAt((p + 0.018) % 1);
+    this._v0.copy(spline.getPointAt(p));
+    this._v1.copy(spline.getPointAt((p + 0.018) % 1));
 
-    // Spline local frame
-    const fwd   = new THREE.Vector3().subVectors(splineAhead, splinePos).normalize();
-    const worldUp = new THREE.Vector3(0, 1, 0);
-    const right = new THREE.Vector3().crossVectors(fwd, worldUp).normalize();
-    const up    = new THREE.Vector3().crossVectors(right, fwd).normalize();
+    // Local spline frame
+    this._fwd.subVectors(this._v1, this._v0).normalize();
+    this._right.crossVectors(this._fwd, this._worldUp).normalize();
+    this._up.crossVectors(this._right, this._fwd).normalize();
 
-    // ── Player lateral movement ──
+    // Lateral movement
     const acc = s.moveSpeed * delta * 2.4;
     const damp = 0.87;
     if (this.keys.a || this.keys.arrowleft)  s.velocityX -= acc;
@@ -622,70 +591,52 @@ export class GameEngine {
     const mag = Math.hypot(s.offsetX, s.offsetY);
     if (mag > CONFIG.maxOffset) { s.offsetX *= CONFIG.maxOffset/mag; s.offsetY *= CONFIG.maxOffset/mag; }
 
-    // ── Ship world position ──
-    const shipPos = splinePos.clone()
-      .addScaledVector(right, s.offsetX)
-      .addScaledVector(up,    s.offsetY);
+    // Ship world pos → _v2
+    this._v2.copy(this._v0)
+      .addScaledVector(this._right, s.offsetX)
+      .addScaledVector(this._up,    s.offsetY);
 
-    // ── Ship orientation: align to spline tangent ──
-    // Build a rotation matrix: -Z = fwd, Y = up
-    const shipFwd = fwd.clone();
-    const shipRight = right.clone();
-    const shipUp  = up.clone();
-
-    // Visual bank angle when steering (around local Z/fwd axis)
+    // Ship orientation
     const targetBank = s.velocityX * -2.8;
     this._shipBankAngle += (targetBank - this._shipBankAngle) * 0.09;
 
-    // Compose final ship quaternion
-    const m = new THREE.Matrix4().makeBasis(shipRight, shipUp, shipFwd.negate());
-    const baseQuat = new THREE.Quaternion().setFromRotationMatrix(m);
-    const bankQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1), this._shipBankAngle);
-    const finalQuat = baseQuat.multiply(bankQuat);
+    this._mat4.makeBasis(this._right, this._up, this._v1.copy(this._fwd).negate());
+    this._qBase.setFromRotationMatrix(this._mat4);
+    this._qBank.setFromAxisAngle(this._bankAxis, this._shipBankAngle);
+    this._qBase.multiply(this._qBank);
 
-    // Apply to ship mesh (smooth lerp so it's never snappy)
-    this.ship.position.lerp(shipPos, 0.25);
-    this.ship.quaternion.slerp(finalQuat, 0.18);
+    this.ship.position.lerp(this._v2, 0.25);
+    this.ship.quaternion.slerp(this._qBase, 0.18);
 
-    // ── Lights on ship ──
+    // Lights
     this.shipLight.position.copy(this.ship.position);
     this.rimLight.position.copy(this.ship.position)
-      .addScaledVector(fwd.clone().negate(), 0.15)   // from in front
-      .addScaledVector(right, -0.10);                 // from left
+      .addScaledVector(this._fwd, -0.15)
+      .addScaledVector(this._right, -0.10);
 
-    // ── Third-person camera ──
-    // Desired camera position: behind and slightly above ship
-    const camDesired = shipPos.clone()
-      .addScaledVector(shipFwd.clone().negate(), CONFIG.camBack)
-      .addScaledVector(shipUp,  CONFIG.camUp);
+    // Camera position: behind + above ship
+    this._v1.copy(this._v2)
+      .addScaledVector(this._fwd, -CONFIG.camBack)
+      .addScaledVector(this._up,   CONFIG.camUp);
+    this._camPos.lerp(this._v1, CONFIG.camLagPos);
 
-    // Smooth camera position (lag = trailing feel)
-    this._camPos.lerp(camDesired, CONFIG.camLagPos);
-
-    // Camera shake on damage
     if (this._shakeMag > 0.001) {
       this._camPos.x += (Math.random()-0.5) * this._shakeMag;
       this._camPos.y += (Math.random()-0.5) * this._shakeMag;
       this._shakeMag *= 0.76;
     }
 
-    // Look-at target: slightly ahead of ship (not at ship itself, feels better)
-    const lookDesired = shipPos.clone().addScaledVector(fwd.clone().negate(), -0.35);
-    this._camTarget.lerp(lookDesired, CONFIG.camLagLook);
+    // Look-at: slightly ahead of ship
+    this._v1.copy(this._v2).addScaledVector(this._fwd, 0.4);
+    this._camTarget.lerp(this._v1, CONFIG.camLagLook);
 
     this.camera.position.copy(this._camPos);
     this.camera.lookAt(this._camTarget);
-
-    // FOV: boost widens for speed feel
-    const targetFOV = s.boostActive ? 88 : 72;
-    this._fov += (targetFOV - this._fov) * 0.07;
-    this.camera.fov = this._fov;
-    this.camera.updateProjectionMatrix();
+    // FOV stays fixed at 75 — no push-back when boost fires
 
     if (this.keys.space && s.isPlaying) this._activateBoost();
   }
 
-  // ── Collisions (against ship position, not camera) ───────────────────────
   _checkCollisions() {
     const s = this.state;
     if (!s.isPlaying) return;
@@ -697,7 +648,6 @@ export class GameEngine {
       const dx = pp.x - o.mesh.position.x;
       const dy = pp.y - o.mesh.position.y;
       const dz = pp.z - o.mesh.position.z;
-      if (Math.abs(dz) > 10) continue;
       if (dx*dx + dy*dy + dz*dz < obsSq) {
         this._takeDamage(); o.active = false; o.mesh.visible = false; return;
       }
@@ -709,14 +659,12 @@ export class GameEngine {
       const dx = pp.x - c.mesh.position.x;
       const dy = pp.y - c.mesh.position.y;
       const dz = pp.z - c.mesh.position.z;
-      if (Math.abs(dz) > 10) continue;
       if (dx*dx + dy*dy + dz*dz < colSq) {
         this._collectItem(); c.active = false; c.mesh.visible = false;
       }
     }
   }
 
-  // ── Level up ──────────────────────────────────────────────────────────────
   _levelUp() {
     const s = this.state;
     s.speedMultiplier += CONFIG.speedIncrement;
@@ -734,21 +682,18 @@ export class GameEngine {
     setTimeout(() => { this.bloomPass.strength = orig; }, 380);
   }
 
-  // ── Main loop ─────────────────────────────────────────────────────────────
-  animate(currentTime = 0) {
-    this.animFrameId = requestAnimationFrame(t => this.animate(t));
+  // ── Main loop — rAF already syncs to display refresh rate ─────────────────
+  // Removed the manual dt < frameTime limiter that caused judder on high-hz
+  // screens and accumulated clock drift when frames were skipped.
+  animate() {
+    this.animFrameId = requestAnimationFrame(() => this.animate());
     if (this.isPaused) return;
 
-    const dt = currentTime - this.lastFrameTime;
-    if (dt < this.frameTime) return;
-    this.lastFrameTime = currentTime - (dt % this.frameTime);
-
-    const delta = Math.min(this.clock.getDelta(), 0.1);
+    const delta = Math.min(this.clock.getDelta(), 0.05);
     this._time += delta;
     const t = this._time;
     const s = this.state;
 
-    // ── Game logic ──
     if (s.isPlaying) {
       const eff = s.boostActive ? s.speedMultiplier * CONFIG.boostPower : s.speedMultiplier;
       s.elapsedMs += delta * 1000 * eff;
@@ -768,27 +713,26 @@ export class GameEngine {
         boostCharge: s.boostCharge, boostActive: s.boostActive,
       });
     } else {
-      // Idle: slowly drift camera for attract mode
+      // Attract mode — reuse pre-allocated vectors
       const idleP = (t * 0.04) % 1;
-      const idlePos  = spline.getPointAt(idleP);
-      const idleAhead= spline.getPointAt((idleP + 0.022) % 1);
-      const idleFwd  = new THREE.Vector3().subVectors(idleAhead, idlePos).normalize();
-      const idleRight= new THREE.Vector3().crossVectors(idleFwd, new THREE.Vector3(0,1,0)).normalize();
-      const idleUp   = new THREE.Vector3().crossVectors(idleRight, idleFwd).normalize();
+      this._v0.copy(spline.getPointAt(idleP));
+      this._v1.copy(spline.getPointAt((idleP + 0.022) % 1));
+      this._fwd.subVectors(this._v1, this._v0).normalize();
+      this._right.crossVectors(this._fwd, this._worldUp).normalize();
+      this._up.crossVectors(this._right, this._fwd).normalize();
 
-      this.ship.position.copy(idlePos);
-      const m2 = new THREE.Matrix4().makeBasis(idleRight, idleUp, idleFwd.clone().negate());
-      this.ship.quaternion.slerp(new THREE.Quaternion().setFromRotationMatrix(m2), 0.08);
+      this.ship.position.copy(this._v0);
+      this._mat4.makeBasis(this._right, this._up, this._v1.copy(this._fwd).negate());
+      this.ship.quaternion.slerp(this._qBase.setFromRotationMatrix(this._mat4), 0.08);
 
-      const idleCam = idlePos.clone()
-        .addScaledVector(idleFwd.clone().negate(), CONFIG.camBack * 2.2)
-        .addScaledVector(idleUp, CONFIG.camUp * 1.4);
-      this._camPos.lerp(idleCam, 0.04);
+      this._v1.copy(this._v0)
+        .addScaledVector(this._fwd, -CONFIG.camBack * 2.2)
+        .addScaledVector(this._up,   CONFIG.camUp * 1.4);
+      this._camPos.lerp(this._v1, 0.04);
       this.camera.position.copy(this._camPos);
-      this.camera.lookAt(idlePos);
+      this.camera.lookAt(this._v0);
     }
 
-    // ── Tunnel shader ──
     const eff2 = s.isPlaying
       ? (s.boostActive ? s.speedMultiplier * CONFIG.boostPower : s.speedMultiplier)
       : 1.0;
@@ -798,18 +742,14 @@ export class GameEngine {
     const invFlicker = s.invulnerable ? (Math.sin(t * 28) * 0.5 + 0.5) * 0.35 : 0;
     this.tubeEdge.material.opacity = 0.16 + Math.sin(t * 0.8) * 0.02 + invFlicker;
 
-    // Engine boost glow on ship
-    const boostGlowIntensity = s.boostActive ? 0.8 : 0.5;
-    this.shipLight.intensity = boostGlowIntensity;
+    this.shipLight.intensity = s.boostActive ? 0.8 : 0.5;
 
-    // ── Obstacles ──
     for (const o of this.activeObstacles) {
       if (!o.active) continue;
       o.mesh.rotateOnAxis(o.rotAxis, delta * o.rotSpeed);
       o.mesh.scale.setScalar(1 + Math.sin(t * 3.5 + o.pathPos * 8) * 0.05);
     }
 
-    // ── Collectibles ──
     for (const c of this.activeCollectibles) {
       if (!c.active) continue;
       c.mesh.rotation.y += delta * 1.4;
@@ -818,7 +758,6 @@ export class GameEngine {
       c.wire.material.opacity = 0.65 + Math.sin(t * 3 + c.pathPos * 8) * 0.25;
     }
 
-    // ── Starfield ──
     const starPos = this.starfield.geometry.attributes.position.array;
     const starSpd = eff2 * (s.boostActive ? 18 : 8);
     for (let i = 0; i < this._starCount; i++) {
@@ -832,7 +771,6 @@ export class GameEngine {
     }
     this.starfield.geometry.attributes.position.needsUpdate = true;
 
-    // ── Screen pass ──
     this._damageAmt *= 0.92;
     this._boostAmt  += ((s.isPlaying && s.boostActive ? 1 : 0) - this._boostAmt) * 0.1;
     this.screenPass.uniforms.uDamage.value = this._damageAmt;
